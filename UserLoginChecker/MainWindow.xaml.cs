@@ -1,26 +1,28 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.DirectoryServices;
-using System.IO;
-using System.Linq;
-using System.Text.RegularExpressions;
-using System.Windows;
-using System.Windows.Input;
 using System.Collections.ObjectModel;
-using System.Threading.Tasks;
+using System.Configuration;
 using System.DirectoryServices.AccountManagement;
-using System.Windows.Documents;
 using System.DirectoryServices.Protocols;
+using System.Linq;
+using System.Net;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
+using System.Windows.Input;
 
 namespace UserLoginChecker
 {
     public partial class MainWindow : Window
     {
-        private readonly List<string> errorMessages = new List<string>();
         private readonly ObservableCollection<UserSession> userSessions;
-        private readonly string quserPath;
+        private readonly UserSearchService userSearchService;
+        private readonly int timeoutMinutes;
+        private CancellationTokenSource cancellationTokenSource;
+        private readonly List<string> errorMessages;
 
         public MainWindow()
         {
@@ -28,9 +30,64 @@ namespace UserLoginChecker
             userSessions = new ObservableCollection<UserSession>();
             UsersDataGrid.ItemsSource = userSessions;
 
-            quserPath = FindQuserPath();
+            string quserPath = Utility.FindQuserPath();
+            string dhcpServer = ConfigurationManager.AppSettings["DhcpServer"];
+            timeoutMinutes = int.TryParse(ConfigurationManager.AppSettings["TimeoutMinutes"], out int timeout) ? timeout : 5; // Default to 5 minutes
 
-            Loaded += (s, e) => ComputerNameTextBox.Focus();
+            errorMessages = new List<string>();
+
+            try
+            {
+                ValidateDhcpServer(dhcpServer);  // Validate the DHCP server IP address
+                userSearchService = new UserSearchService(dhcpServer, quserPath);
+            }
+            catch (Exception ex)
+            {
+                ShowErrorMessage(ex.Message);
+                DisableSearchControls(); // Disable controls since DHCP server is invalid
+                return;  // Exit constructor early since there was an error
+            }
+
+            Loaded += (s, e) =>
+            {
+                ComputerNameTextBox.Focus();
+                LoadDhcpScopes();  // Load DHCP scopes when the window is loaded
+            };
+        }
+
+        private void DhcpScopeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            ValidateForm();
+        }
+
+        // This method handles text changes in the Username TextBox
+        private void UsernameTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            ValidateForm();
+        }
+
+        private void ValidateDhcpServer(string dhcpServer)
+        {
+            if (!IPAddress.TryParse(dhcpServer, out _))
+            {
+                throw new Exception($"Invalid DHCP server IP address: {dhcpServer}. Please correct the IP address in the application configuration file. Disabling ability to search computers for a user session until this issue has been corrected.");
+            }
+        }
+
+        private void DisableSearchControls()
+        {
+            DhcpScopeComboBox.IsEnabled = false;
+            SearchButton.IsEnabled = false;
+            UsernameTextBox.IsEnabled = false;
+        }
+
+        private void LoadDhcpScopes()
+        {
+            var scopes = userSearchService.GetDhcpScopes();
+            scopes.Add("All Computers");
+            DhcpScopeComboBox.ItemsSource = scopes;
+            DhcpScopeComboBox.SelectedIndex = scopes.Count > 0 ? 0 : -1;
+            ValidateForm();  // Validate the form to enable/disable the Search button
         }
 
         private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e)
@@ -47,7 +104,27 @@ namespace UserLoginChecker
 
         private async void CheckComputerButton_Click(object sender, RoutedEventArgs e) => await CheckComputerButton_ClickAsync();
 
-        private async void SearchButton_Click(object sender, RoutedEventArgs e) => await SearchButton_ClickAsync();
+        private async void SearchButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (SearchButton.Content.ToString() == "Cancel")
+            {
+                cancellationTokenSource?.Cancel();
+                return;
+            }
+
+            cancellationTokenSource = new CancellationTokenSource(TimeSpan.FromMinutes(timeoutMinutes));
+            try
+            {
+                SearchButton.Content = "Cancel";
+                await SearchButton_ClickAsync(cancellationTokenSource.Token);
+            }
+            finally
+            {
+                SearchButton.Content = "Search Computers";
+                cancellationTokenSource.Dispose();
+                cancellationTokenSource = null;
+            }
+        }
 
         private async void ComputerNameTextBox_KeyDown(object sender, KeyEventArgs e)
         {
@@ -62,18 +139,29 @@ namespace UserLoginChecker
         {
             if (e.Key == Key.Enter)
             {
-                await SearchButton_ClickAsync();
-                ResetAndFocusTextBox(UsernameTextBox);
+                if (SearchButton.Content.ToString() == "Cancel")
+                {
+                    cancellationTokenSource?.Cancel();
+                    return;
+                }
+
+                cancellationTokenSource = new CancellationTokenSource(TimeSpan.FromMinutes(timeoutMinutes));
+                try
+                {
+                    SearchButton.Content = "Cancel";
+                    await SearchButton_ClickAsync(cancellationTokenSource.Token);
+                }
+                finally
+                {
+                    SearchButton.Content = "Search Computers";
+                    cancellationTokenSource.Dispose();
+                    cancellationTokenSource = null;
+                }
             }
         }
 
         private async Task CheckComputerButton_ClickAsync()
         {
-            if (IsQuserPathInvalid())
-            {
-                return;
-            }
-
             string computerName = ComputerNameTextBox.Text.Trim();
             if (string.IsNullOrEmpty(computerName))
             {
@@ -83,7 +171,7 @@ namespace UserLoginChecker
 
             SetProgressVisibility("Searching...");
 
-            var loggedUsers = await Task.Run(() => GetLoggedInUsers(computerName));
+            var loggedUsers = await Task.Run(() => userSearchService.GetLoggedInUsers(computerName));
 
             UpdateComputerCheckResultTextBlock(loggedUsers, computerName);
 
@@ -91,13 +179,8 @@ namespace UserLoginChecker
             DisplayErrorSummary();
         }
 
-        private async Task SearchButton_ClickAsync()
+        private async Task SearchButton_ClickAsync(CancellationToken cancellationToken)
         {
-            if (IsQuserPathInvalid())
-            {
-                return;
-            }
-
             string usernameFilter = UsernameTextBox.Text.Trim();
             if (string.IsNullOrEmpty(usernameFilter))
             {
@@ -105,53 +188,81 @@ namespace UserLoginChecker
                 return;
             }
 
+            string selectedScope = DhcpScopeComboBox.SelectedItem.ToString();
+
             SetProgressVisibility("Starting search...");
 
-            errorMessages.Clear();
             userSessions.Clear();
+            errorMessages.Clear();
 
             bool messageBoxShown = false;
 
             try
             {
-                await Task.Run(() =>
+                await Task.Run(async () =>
                 {
                     try
                     {
-                        int totalComputers = 0;
+                        var computers = selectedScope == "All Computers"
+                            ? userSearchService.GetAllComputers()
+                            : userSearchService.GetComputersInScope(selectedScope);
+
+                        int totalComputers = computers.Count;
                         int currentCount = 0;
 
-                        using (var context = CreatePrincipalContext())
-                        using (var searcher = CreateDirectorySearcher(context))
+                        foreach (var computerName in computers)
                         {
-                            totalComputers = searcher.FindAll().Count;
+                            cancellationToken.ThrowIfCancellationRequested();
 
-                            foreach (SearchResult searchResult in searcher.FindAll())
-                            {
-                                string computerName = searchResult.Properties["name"][0].ToString();
-                                var sessions = GetLoggedInUsers(computerName);
+                            var sessions = userSearchService.GetLoggedInUsers(computerName);
 
-                                lock (userSessions)
+                            var filteredSessions = sessions
+                                .Where(s => s.Username.ToLowerInvariant().Contains(usernameFilter.ToLowerInvariant()))
+                                .Select(s => new UserSession
                                 {
-                                    foreach (var session in sessions)
+                                    Username = s.Username,
+                                    SessionName = s.SessionName,
+                                    Id = s.Id,
+                                    State = s.State,
+                                    IdleTime = s.IdleTime,
+                                    LogonTime = s.LogonTime,
+                                    ComputerName = computerName
+                                })
+                                .ToList();
+
+                            if (filteredSessions.Any())
+                            {
+                                await Dispatcher.InvokeAsync(() =>
+                                {
+                                    foreach (var session in filteredSessions)
                                     {
                                         userSessions.Add(session);
                                     }
-                                }
-
-                                currentCount++;
-                                UpdateProgressText($"{currentCount} of {totalComputers}");
+                                });
                             }
+
+                            currentCount++;
+                            await Dispatcher.InvokeAsync(() => UpdateProgressText($"{currentCount} of {totalComputers}"));
                         }
                     }
                     catch (Exception ex) when (HandleException(ref messageBoxShown, ex)) { }
-                });
+                }, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                ShowWarningMessage("Search was canceled.");
             }
             finally
             {
-                HideProgress();
+                await Dispatcher.InvokeAsync(HideProgress);
                 DisplayErrorSummary();
             }
+        }
+
+        private void ValidateForm()
+        {
+            SearchButton.IsEnabled = !string.IsNullOrEmpty(UsernameTextBox.Text.Trim())
+                                     && DhcpScopeComboBox.SelectedItem != null;
         }
 
         private bool HandleException(ref bool messageBoxShown, Exception ex)
@@ -170,6 +281,9 @@ namespace UserLoginChecker
                     case LdapException _:
                         ShowErrorMessage("The LDAP server is unavailable. Please check your network connection and try again.");
                         break;
+                    case OperationCanceledException _:
+                        ShowWarningMessage("The operation was canceled.");
+                        break;
                     default:
                         ShowErrorMessage($"An unexpected error occurred: {ex.Message}");
                         break;
@@ -178,7 +292,7 @@ namespace UserLoginChecker
                 ClearTextboxesAndFocus();
             });
 
-            LogError(ex.Message);
+            Utility.LogError(ex.Message);
             return true;
         }
 
@@ -195,7 +309,13 @@ namespace UserLoginChecker
             ProgressTextBlock.Text = message;
         }
 
-        private void UpdateProgressText(string text) => Dispatcher.Invoke(() => ProgressTextBlock.Text = text);
+        private void UpdateProgressText(string text)
+        {
+            if (ProgressTextBlock.Text != text)
+            {
+                Dispatcher.Invoke(() => ProgressTextBlock.Text = text);
+            }
+        }
 
         private void HideProgress()
         {
@@ -209,22 +329,26 @@ namespace UserLoginChecker
 
             if (loggedUsers.Any())
             {
-                ComputerCheckResultTextBlock.Inlines.Add(new Run($"Users are logged into {computerName}: "));
-
+                var sb = new StringBuilder($"Users are logged into {computerName}: ");
                 for (int i = 0; i < loggedUsers.Count; i++)
                 {
                     var user = loggedUsers[i];
-                    ComputerCheckResultTextBlock.Inlines.Add(new Run(user.Username) { FontWeight = FontWeights.Bold });
-
+                    sb.Append(user.Username);
                     if (i < loggedUsers.Count - 1)
                     {
-                        ComputerCheckResultTextBlock.Inlines.Add(new Run(", "));
+                        sb.Append(", ");
                     }
                 }
+
+                ComputerCheckResultTextBlock.Inlines.Add(new Run(sb.ToString()) { FontWeight = FontWeights.Bold });
             }
             else
             {
-                ComputerCheckResultTextBlock.Text = $"No users are currently logged into {computerName}.";
+                var message = $"No users are currently logged into {computerName}.";
+                if (ComputerCheckResultTextBlock.Text != message)
+                {
+                    ComputerCheckResultTextBlock.Text = message;
+                }
             }
         }
 
@@ -235,155 +359,17 @@ namespace UserLoginChecker
             ComputerNameTextBox.Focus();
         }
 
-        private PrincipalContext CreatePrincipalContext() => new PrincipalContext(ContextType.Domain);
-
-        private DirectorySearcher CreateDirectorySearcher(PrincipalContext context)
-        {
-            var searcher = new DirectorySearcher(new DirectoryEntry("LDAP://" + context.ConnectedServer))
-            {
-                Filter = "(objectClass=computer)"
-            };
-            searcher.PropertiesToLoad.Add("name");
-
-            return searcher;
-        }
-
-        private bool IsQuserPathInvalid()
-        {
-            if (string.IsNullOrEmpty(quserPath))
-            {
-                ShowErrorMessage("quser.exe path is not set. Unable to perform the operation.");
-                return true;
-            }
-            return false;
-        }
-
         private void ShowWarningMessage(string message) => MessageBox.Show(message, "Input Required", MessageBoxButton.OK, MessageBoxImage.Warning);
 
         private void ShowErrorMessage(string message) => MessageBox.Show(message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-
-        private string FindQuserPath()
-        {
-            string[] pathsToCheck = {
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "quser.exe"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "sysnative", "quser.exe"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.SystemX86), "quser.exe")
-            };
-
-            foreach (var path in pathsToCheck)
-            {
-                if (File.Exists(path)) return path;
-            }
-
-            foreach (var path in Environment.GetEnvironmentVariable("PATH").Split(';'))
-            {
-                var fullPath = Path.Combine(path, "quser.exe");
-                if (File.Exists(fullPath)) return fullPath;
-            }
-
-            ShowErrorMessage("quser.exe not found. Please ensure it is available in your PATH or System32 directory.");
-            return null;
-        }
-
-        private List<UserSession> GetLoggedInUsers(string computerName)
-        {
-            var sessions = new List<UserSession>();
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = quserPath,
-                    Arguments = $"/server:{computerName}",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
-
-                using (var process = Process.Start(psi))
-                {
-                    var output = process.StandardOutput.ReadToEnd();
-                    var errorOutput = process.StandardError.ReadToEnd();
-
-                    if (!string.IsNullOrEmpty(output))
-                    {
-                        var lines = output.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries).Skip(1);
-                        foreach (var line in lines)
-                        {
-                            var session = ParseQUserLine(line);
-                            if (session.HasValue)
-                            {
-                                sessions.Add(session.Value);
-                            }
-                        }
-                    }
-
-                    if (!string.IsNullOrEmpty(errorOutput))
-                    {
-                        throw new Exception(errorOutput);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                var errorMessage = $"Error querying {computerName}: {ex.Message}";
-                errorMessages.Add(errorMessage);
-                LogError(errorMessage);
-            }
-
-            return sessions;
-        }
 
         private void DisplayErrorSummary()
         {
             if (errorMessages.Any())
             {
+                Utility.LogErrors(errorMessages);
                 ShowWarningMessage(string.Join(Environment.NewLine, errorMessages));
             }
         }
-
-        private UserSession? ParseQUserLine(string line)
-        {
-            var regex = new Regex(@"\s*(?<USERNAME>\S+)\s+(?<SESSIONNAME>\S+)\s+(?<ID>\d+)\s+(?<STATE>\S+)\s+(?<IDLE>\S+)\s+(?<LOGONTIME>.+)");
-            var match = regex.Match(line);
-
-            return match.Success
-                ? new UserSession
-                {
-                    Username = match.Groups["USERNAME"].Value,
-                    SessionName = match.Groups["SESSIONNAME"].Value,
-                    Id = match.Groups["ID"].Value,
-                    State = match.Groups["STATE"].Value,
-                    IdleTime = match.Groups["IDLE"].Value,
-                    LogonTime = match.Groups["LOGONTIME"].Value
-                }
-                : (UserSession?)null;
-        }
-
-        private void LogError(string message)
-        {
-            string logFilePath = "UserLoginCheckerErrorLog.txt";
-            try
-            {
-                using (var writer = new StreamWriter(logFilePath, true))
-                {
-                    writer.WriteLine($"{DateTime.Now}: {message}");
-                }
-            }
-            catch (Exception ex)
-            {
-                ShowErrorMessage($"Failed to write to log file: {ex.Message}");
-            }
-        }
-    }
-
-    public struct UserSession
-    {
-        public string Username { get; set; }
-        public string SessionName { get; set; }
-        public string Id { get; set; }
-        public string State { get; set; }
-        public string IdleTime { get; set; }
-        public string LogonTime { get; set; }
     }
 }
