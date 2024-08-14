@@ -6,6 +6,7 @@ using System.DirectoryServices.AccountManagement;
 using System.DirectoryServices.Protocols;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -32,19 +33,19 @@ namespace UserLoginChecker
 
             string quserPath = Utility.FindQuserPath();
             string dhcpServer = ConfigurationManager.AppSettings["DhcpServer"];
-            timeoutMinutes = int.TryParse(ConfigurationManager.AppSettings["TimeoutMinutes"], out int timeout) ? timeout : 5; // Default to 5 minutes
+            timeoutMinutes = int.TryParse(ConfigurationManager.AppSettings["TimeoutMinutes"], out int timeout) ? timeout : 60; // Default to 60 minutes
 
             errorMessages = new List<string>();
 
             try
             {
-                ValidateDhcpServer(dhcpServer);  // Validate the DHCP server IP address
+                ValidateDhcpServer(dhcpServer);  // Validate the DHCP server name or IP address
                 userSearchService = new UserSearchService(dhcpServer, quserPath);
             }
             catch (Exception ex)
             {
                 ShowErrorMessage(ex.Message);
-                DisableSearchControls(); // Disable controls since DHCP server is invalid
+                Application.Current.Shutdown();  // Close the application after showing the error message
                 return;  // Exit constructor early since there was an error
             }
 
@@ -68,18 +69,26 @@ namespace UserLoginChecker
 
         private void ValidateDhcpServer(string dhcpServer)
         {
-            if (!IPAddress.TryParse(dhcpServer, out _))
+            if (string.IsNullOrEmpty(dhcpServer))
             {
-                throw new Exception($"Invalid DHCP server IP address: {dhcpServer}. Please correct the IP address in the application configuration file. Disabling ability to search computers for a user session until this issue has been corrected.");
+                throw new Exception("DHCP server is not configured. Please provide a valid server name or IP address in the application configuration file.");
+            }
+
+            try
+            {
+                // Attempt to resolve the server name to an IP address
+                IPHostEntry hostEntry = Dns.GetHostEntry(dhcpServer);
+                if (hostEntry.AddressList == null || hostEntry.AddressList.Length == 0)
+                {
+                    throw new Exception($"Unable to resolve DHCP server name: {dhcpServer}. Please ensure the server name is correct.");
+                }
+            }
+            catch (SocketException)
+            {
+                throw new Exception($"Invalid DHCP server name or IP address: {dhcpServer}. Please correct it in the application configuration file.");
             }
         }
 
-        private void DisableSearchControls()
-        {
-            DhcpScopeComboBox.IsEnabled = false;
-            SearchButton.IsEnabled = false;
-            UsernameTextBox.IsEnabled = false;
-        }
 
         private void LoadDhcpScopes()
         {
@@ -163,21 +172,38 @@ namespace UserLoginChecker
         private async Task CheckComputerButton_ClickAsync()
         {
             string computerName = ComputerNameTextBox.Text.Trim();
+
             if (string.IsNullOrEmpty(computerName))
             {
                 ShowWarningMessage("Please enter a computer name.");
                 return;
             }
 
+            if (userSearchService == null)
+            {
+                ShowErrorMessage("UserSearchService is not initialized. Please check your configuration.");
+                return;
+            }
+
             SetProgressVisibility("Searching...");
 
-            var loggedUsers = await Task.Run(() => userSearchService.GetLoggedInUsers(computerName));
+            try
+            {
+                var loggedUsers = await Task.Run(() => userSearchService.GetLoggedInUsers(computerName));
 
-            UpdateComputerCheckResultTextBlock(loggedUsers, computerName);
-
-            HideProgress();
-            DisplayErrorSummary();
+                UpdateComputerCheckResultTextBlock(loggedUsers, computerName);
+            }
+            catch (Exception ex)
+            {
+                ShowErrorMessage($"An error occurred: {ex.Message}");
+            }
+            finally
+            {
+                HideProgress();
+                DisplayErrorSummary();
+            }
         }
+
 
         private async Task SearchButton_ClickAsync(CancellationToken cancellationToken)
         {
@@ -194,6 +220,7 @@ namespace UserLoginChecker
 
             userSessions.Clear();
             errorMessages.Clear();
+            List<string> accessDeniedComputers = new List<string>(); // Collect access denied computers
 
             bool messageBoxShown = false;
 
@@ -214,31 +241,38 @@ namespace UserLoginChecker
                         {
                             cancellationToken.ThrowIfCancellationRequested();
 
-                            var sessions = userSearchService.GetLoggedInUsers(computerName);
-
-                            var filteredSessions = sessions
-                                .Where(s => s.Username.ToLowerInvariant().Contains(usernameFilter.ToLowerInvariant()))
-                                .Select(s => new UserSession
-                                {
-                                    Username = s.Username,
-                                    SessionName = s.SessionName,
-                                    Id = s.Id,
-                                    State = s.State,
-                                    IdleTime = s.IdleTime,
-                                    LogonTime = s.LogonTime,
-                                    ComputerName = computerName
-                                })
-                                .ToList();
-
-                            if (filteredSessions.Any())
+                            try
                             {
-                                await Dispatcher.InvokeAsync(() =>
-                                {
-                                    foreach (var session in filteredSessions)
+                                var sessions = userSearchService.GetLoggedInUsers(computerName);
+
+                                var filteredSessions = sessions
+                                    .Where(s => s.Username.ToLowerInvariant().Contains(usernameFilter.ToLowerInvariant()))
+                                    .Select(s => new UserSession
                                     {
-                                        userSessions.Add(session);
-                                    }
-                                });
+                                        Username = s.Username,
+                                        SessionName = s.SessionName,
+                                        Id = s.Id,
+                                        State = s.State,
+                                        IdleTime = s.IdleTime,
+                                        LogonTime = s.LogonTime,
+                                        ComputerName = computerName
+                                    })
+                                    .ToList();
+
+                                if (filteredSessions.Any())
+                                {
+                                    await Dispatcher.InvokeAsync(() =>
+                                    {
+                                        foreach (var session in filteredSessions)
+                                        {
+                                            userSessions.Add(session);
+                                        }
+                                    });
+                                }
+                            }
+                            catch (UnauthorizedAccessException)
+                            {
+                                accessDeniedComputers.Add(computerName); // Collect access denied computer name
                             }
 
                             currentCount++;
@@ -255,9 +289,16 @@ namespace UserLoginChecker
             finally
             {
                 await Dispatcher.InvokeAsync(HideProgress);
+
+                if (accessDeniedComputers.Any())
+                {
+                    ShowWarningMessage($"Access denied to the following computers:\n{string.Join(", ", accessDeniedComputers)}. Please ensure you have administrative privileges.");
+                }
+
                 DisplayErrorSummary();
             }
         }
+
 
         private void ValidateForm()
         {
@@ -281,6 +322,9 @@ namespace UserLoginChecker
                     case LdapException _:
                         ShowErrorMessage("The LDAP server is unavailable. Please check your network connection and try again.");
                         break;
+                    case UnauthorizedAccessException _:
+                        ShowErrorMessage("You do not have administrative privileges on the target computer(s). Please run the application with appropriate permissions.");
+                        break;
                     case OperationCanceledException _:
                         ShowWarningMessage("The operation was canceled.");
                         break;
@@ -295,6 +339,7 @@ namespace UserLoginChecker
             Utility.LogError(ex.Message);
             return true;
         }
+
 
         private void ResetAndFocusTextBox(TextBox textBox)
         {

@@ -158,17 +158,31 @@ namespace UserLoginChecker
 
                     if (!string.IsNullOrEmpty(errorOutput))
                     {
-                        throw new Exception(errorOutput);
+                        if (errorOutput.Contains("Access is denied"))
+                        {
+                            throw new UnauthorizedAccessException($"Access denied to {computerName}. You must have administrative privileges.");
+                        }
+                        else
+                        {
+                            throw new Exception(errorOutput);
+                        }
                     }
                 }
             }
+            catch (UnauthorizedAccessException ex)
+            {
+                throw new UnauthorizedAccessException(ex.Message);  // Re-throw to handle it in the UI layer
+            }
             catch (Exception ex)
             {
-                throw new Exception($"Error querying {computerName}: {ex.Message}", ex);
+                var errorMessage = $"Error querying {computerName}: {ex.Message}";
+                Utility.LogError(errorMessage);
+                throw new Exception(errorMessage);
             }
 
             return sessions;
         }
+
 
         private static readonly Regex QUserLineRegex = new Regex(@"\s*(?<USERNAME>\S+)\s+(?<SESSIONNAME>\S+)\s+(?<ID>\d+)\s+(?<STATE>\S+)\s+(?<IDLE>\S+)\s+(?<LOGONTIME>.+)", RegexOptions.Compiled);
 
