@@ -49,8 +49,38 @@ namespace UserLoginChecker
             finally
             {
                 ToggleUIElements(true); // Re-enable UI elements after initialization
+                // Set focus to the ComputerNameTextBox when the application opens
+                ComputerNameTextBox.Focus();
             }
         }
+
+        private string FindQuserPath()
+        {
+            // Common locations for quser.exe
+            string system32Path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "quser.exe");
+
+            if (File.Exists(system32Path))
+            {
+                return system32Path;
+            }
+
+            // Fallback: Check the PATH environment variable
+            string pathEnv = Environment.GetEnvironmentVariable("PATH");
+            if (pathEnv != null)
+            {
+                foreach (var path in pathEnv.Split(Path.PathSeparator))
+                {
+                    string quserPath = Path.Combine(path, "quser.exe");
+                    if (File.Exists(quserPath))
+                    {
+                        return quserPath;
+                    }
+                }
+            }
+
+            throw new FileNotFoundException("quser.exe not found. Please ensure it is available in the system path.");
+        }
+
 
         private int GetTimeoutFromConfig()
         {
@@ -63,18 +93,27 @@ namespace UserLoginChecker
 
         private string GetLogFilePath()
         {
-            string username = Environment.UserName;
-            string date = DateTime.Now.ToString("yyyyMMdd");
-            string logFileName = $"UserLoginChecker_{username}_{date}.log";
+            // Get the path to the main application directory
+            string appDirectory = AppDomain.CurrentDomain.BaseDirectory;
 
-            string logDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "UserLoginCheckerLogs");
+            // Define the Logs sub-directory
+            string logDirectory = Path.Combine(appDirectory, "Logs");
+
+            // Ensure the Logs directory exists
             if (!Directory.Exists(logDirectory))
             {
                 Directory.CreateDirectory(logDirectory);
             }
 
+            // Create a unique log file name based on the username and date
+            string username = Environment.UserName;
+            string date = DateTime.Now.ToString("yyyyMMdd");
+            string logFileName = $"UserLoginChecker_{username}_{date}.log";
+
+            // Combine the log directory and file name
             return Path.Combine(logDirectory, logFileName);
         }
+
 
         private async Task InitializeAsync()
         {
@@ -90,11 +129,20 @@ namespace UserLoginChecker
             Dispatcher.Invoke(() =>
             {
                 DhcpScopeComboBox.Items.Clear();
+
+                // Add "All Computers" option first
                 DhcpScopeComboBox.Items.Add("All Computers");
 
-                foreach (var scope in dhcpScopes)
+                if (dhcpScopes.Count == 0)
                 {
-                    DhcpScopeComboBox.Items.Add(scope);
+                    MessageBox.Show("No DHCP scopes were found. Please check the DHCP server configuration.", "No Scopes Found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                else
+                {
+                    foreach (var scope in dhcpScopes)
+                    {
+                        DhcpScopeComboBox.Items.Add(scope);
+                    }
                 }
 
                 DhcpScopeComboBox.SelectedIndex = 0; // Default to "All Computers"
@@ -299,7 +347,14 @@ namespace UserLoginChecker
 
                 await Task.WhenAll(tasks).ConfigureAwait(false);
 
-                Dispatcher.Invoke(() => MessageBox.Show("Search completed."));
+                Dispatcher.Invoke(() =>
+                {
+                    MessageBox.Show("Search completed.");
+
+                    // Highlight the text in the TextBox after results are returned
+                    UsernameTextBox.Focus();
+                    UsernameTextBox.SelectAll();
+                });
             }
             catch (OperationCanceledException)
             {
@@ -322,6 +377,7 @@ namespace UserLoginChecker
                 });
             }
         }
+
 
         private async void CheckComputerButton_Click(object sender, RoutedEventArgs e)
         {
@@ -361,6 +417,10 @@ namespace UserLoginChecker
                     {
                         ComputerCheckResultTextBlock.Text = $"No users found on {computerName}.";
                     }
+
+                    // Highlight the text in the TextBox after results are returned
+                    ComputerNameTextBox.Focus();
+                    ComputerNameTextBox.SelectAll();
                 });
             }
             catch (OperationCanceledException)
@@ -383,13 +443,16 @@ namespace UserLoginChecker
             }
         }
 
+
         private async Task<bool> SearchForUserOnComputerAsync(string username, string computer, CancellationToken cancellationToken, TimeSpan timeout)
         {
             try
             {
+                string quserPath = FindQuserPath(); // Get the path to quser.exe
+
                 var processStartInfo = new ProcessStartInfo
                 {
-                    FileName = "quser.exe",
+                    FileName = quserPath,  // Use the dynamically found path
                     Arguments = $"/server:{computer}",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -447,6 +510,7 @@ namespace UserLoginChecker
             return false;
         }
 
+
         private List<SessionInfo> ParseQuserOutput(string output)
         {
             var sessions = new List<SessionInfo>();
@@ -477,10 +541,12 @@ namespace UserLoginChecker
 
         private void ToggleUIElements(bool isEnabled)
         {
-            SearchButton.IsEnabled = isEnabled;
+            InitializationSpinner.Visibility = isEnabled ? Visibility.Collapsed : Visibility.Visible;
+            ComputerNameTextBox.IsEnabled = isEnabled;
             DhcpScopeComboBox.IsEnabled = isEnabled;
+            SearchButton.IsEnabled = isEnabled;
             CheckComputerButton.IsEnabled = isEnabled;
-            // Disable/enable other UI elements as needed
+            UsernameTextBox.IsEnabled = isEnabled;
         }
 
         private void LogError(string message)
@@ -494,6 +560,60 @@ namespace UserLoginChecker
             {
                 Debug.WriteLine($"Failed to write to log file: {ex.Message}");
             }
+        }
+
+        private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton == MouseButton.Left)
+            {
+                this.DragMove();
+            }
+        }
+
+        private void MinimizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.WindowState = WindowState.Minimized;
+        }
+
+        private void CloseButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.Close();
+        }
+
+        private void ComputerNameTextBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter && CheckComputerButton.IsEnabled)
+            {
+                CheckComputerButton_Click(sender, e);
+            }
+        }
+
+        private void ComputerNameTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            CheckComputerButton.IsEnabled = !string.IsNullOrWhiteSpace(ComputerNameTextBox.Text);
+        }
+
+        private void DhcpScopeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            UpdateSearchButtonState();
+        }
+
+        private void UsernameTextBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter && SearchButton.IsEnabled)
+            {
+                SearchButton_Click(sender, e);
+            }
+        }
+
+        private void UsernameTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            UpdateSearchButtonState();
+        }
+
+        private void UpdateSearchButtonState()
+        {
+            SearchButton.IsEnabled = !string.IsNullOrWhiteSpace(UsernameTextBox.Text) && DhcpScopeComboBox.SelectedItem != null;
         }
     }
 
