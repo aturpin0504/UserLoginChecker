@@ -2,87 +2,87 @@
 
 ## Overview
 
-The **User Login Checker** is a WPF application designed to help IT administrators and support staff check which users are logged into computers within a specific DHCP scope or across all computers in a domain. The application allows you to search for active user sessions on remote computers based on either a specific username or a computer name.
+**User Login Checker** is a WPF-based application that allows network administrators to easily check which users are logged into computers within a specified DHCP scope or across the entire network. This tool provides a simple and efficient way to monitor user sessions on remote machines, utilizing PowerShell and the `quser.exe` command to gather session information.
 
 ## Features
 
-- **Search by Computer Name**: Check if any users are logged into a specific computer.
-- **Search by Username**: Find all computers where a specific user is logged in.
-- **Filter by DHCP Scope**: Narrow your search to computers within a specific DHCP scope or search across all computers in the domain.
-- **Progress Feedback**: Provides real-time feedback on the progress of searches.
-- **Cancel Search**: Ability to cancel long-running searches.
+- **Check Specific Computers**: Enter a computer name to check if any users are logged into that machine.
+- **Search by DHCP Scope**: Select a DHCP scope to search for user sessions across all computers within that scope.
+- **Real-Time Feedback**: Progress is displayed in real-time as the application searches for user sessions, with a detailed status bar and progress indicator.
+- **Cancelable Operations**: Ongoing operations can be canceled at any time by clicking the "Cancel" button.
+- **Detailed Results**: Results are displayed in a sortable and resizable `DataGrid`, allowing you to see session details such as the computer name, username, session ID, and more.
 
 ## Requirements
 
-- **.NET Framework**: Version 4.6.1 or later.
-- **Windows OS**: The application is designed to run on Windows.
-- **Admin Privileges**: Administrator privileges are required to execute remote commands and retrieve session information from other computers.
+- **.NET Framework 4.6.1** or higher
+- **Windows OS** with PowerShell installed
+- **Network Access** to the target computers and DHCP servers
+- **Administrator Privileges** may be required to execute certain commands
 
 ## Installation
 
-1. **Download**: Obtain the latest version of the application from the repository or distribution source.
-2. **Extract**: Unzip the contents into a directory of your choice.
-3. **Configuration**: Modify the `app.config` file to set the correct DHCP server and timeout settings.
-
-## Configuration
-
-Before using the application, you'll need to configure the `app.config` file:
-
-1. **Open `app.config`**: Located in the application directory.
-2. **Set DHCP Server**: Replace the `DhcpServer` value with the server name or IP address of your DHCP server.
-
-   ```xml
-   <appSettings>
-     <add key="DhcpServer" value="dhcp-server.local" />
-     <add key="TimeoutMinutes" value="60" />
-   </appSettings>
+1. **Clone the Repository**:
+   ```bash
+   git clone https://github.com/your-username/user-login-checker.git
+   cd user-login-checker
    ```
 
-   - `DhcpServer`: This can be either the server name (e.g., `dhcp-server.local`) or an IP address (e.g., `192.168.1.1`) of the DHCP server that manages the scopes you want to query.
-   - `TimeoutMinutes`: The number of minutes before a search times out.
+2. **Build the Application**:
+   - Open the solution file in Visual Studio.
+   - Build the solution to generate the executable.
 
-3. **Save**: Save your changes to the `app.config` file.
+3. **Configure Application Settings**:
+   - Modify the `App.config` file to include your DHCP server name:
+     ```xml
+     <appSettings>
+         <add key="DhcpServerName" value="your-dhcp-server-name" />
+         <add key="TaskTimeoutMinutes" value="60" />
+     </appSettings>
+     ```
+
+4. **Run the Application**:
+   - Launch the application from Visual Studio or by running the generated executable.
 
 ## Usage
 
-### Launching the Application
+### 1. **Check a Specific Computer**
 
-1. **Run the Application**: Double-click the `UserLoginChecker.exe` file to launch the application.
+- **Enter the Computer Name**: In the "Check Computer" section, enter the name of the computer you want to check.
+- **Click "Check Computer"**: The application will search for active user sessions on the specified computer. Results will be displayed below.
 
-### Checking a Computer for Logged-In Users
+### 2. **Search by DHCP Scope**
 
-1. **Enter Computer Name**: In the "Enter computer name" field, type the name of the computer you want to check.
-2. **Click "Check Computer"**: The application will retrieve and display the users currently logged into that computer.
+- **Select a DHCP Scope**: From the "Select DHCP Scope" dropdown, choose the DHCP scope to search within. You can also select "All Computers" to search across the entire network.
+- **Enter a Username**: In the "Search Computers" section, enter the username you want to search for.
+- **Click "Search Computers"**: The application will search all computers within the selected DHCP scope for the specified username. Progress is shown in real-time, and results are displayed in the `DataGrid`.
 
-### Searching for a User Across Computers
+### 3. **Canceling an Operation**
 
-1. **Select DHCP Scope**: Use the dropdown to select the DHCP scope you want to search within. Choose "All Computers" to search across the entire domain.
-2. **Enter Username**: Type the username you want to search for in the "Enter username" field.
-3. **Click "Search Computers"**: The application will search through the computers in the selected DHCP scope and display the results in the grid.
-4. **Cancel Search**: If a search is taking too long, you can click "Cancel" to stop the operation.
+- **Click "Cancel"**: If an operation is taking too long or you wish to stop it, simply click the "Cancel" button. The operation will be terminated, and the application will return to the ready state.
 
-### Viewing Results
+### 4. **Viewing Results**
 
-- **Data Grid**: Results are displayed in the grid, showing the computer name, username, session name, and other session details.
-- **Progress Bar**: The progress bar and text will update to show the current progress of the search.
+- **DataGrid Interaction**: The results are displayed in a `DataGrid`, where you can sort by columns, resize columns, and review detailed session information such as the computer name, username, session name, session ID, state, idle time, and logon time.
 
-### Error Handling
+### 5. **Status Bar**
 
-- **Invalid DHCP Server**: If the DHCP server name or IP address in the configuration is invalid or cannot be resolved, the application will display an error message and close. You'll need to correct the server information in the `app.config` file before restarting the application.
-- **Access Denied Errors**: If you do not have administrative privileges on a target computer, the application will inform you of which computers were inaccessible due to lack of permissions after the search completes.
-- **Missing Inputs**: If required fields are left empty (e.g., username or DHCP scope), the application will prompt you to complete these fields before proceeding.
+- **Monitor Application State**: The status bar at the bottom of the window provides real-time feedback, such as "Ready", "Processing...", or "Operation Canceled".
+
+## Logging
+
+- **Log Files**: The application generates log files in the user's application data folder. Logs are named using the format `UserLoginChecker_{username}_{yyyyMMdd}.log`.
+- **Error Tracking**: All errors encountered during operations are logged with timestamps for easy troubleshooting.
 
 ## Troubleshooting
 
-- **No Results Found**: Ensure that the computer names and usernames entered are correct and that the computers are within the selected DHCP scope.
-- **Cannot Connect to DHCP Server**: Verify that the DHCP server name or IP address is correct and that the application has network access to the server.
-- **Timeouts**: If searches are frequently timing out, consider increasing the `TimeoutMinutes` value in the `app.config` file.
-- **Access Denied on Computers**: Ensure that you have administrative privileges on the computers you are querying.
+- **No Results Found**: Ensure that the computer name or DHCP scope is correct, and that the target computers are reachable.
+- **Access Denied**: If the application fails to retrieve information, ensure you have sufficient permissions and that PowerShell can run with the necessary privileges.
 
 ## Contributing
 
-Contributions to the project are welcome. Please fork the repository, make your changes, and submit a pull request.
+- **Pull Requests**: Contributions are welcome! Please fork the repository and create a pull request with your changes.
+- **Issues**: Report issues via the GitHub Issues tab.
 
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file for more information.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
